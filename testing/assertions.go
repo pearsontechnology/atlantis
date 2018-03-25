@@ -16,9 +16,11 @@ package testing
 import (
 	"fmt"
 	"path/filepath"
-	"reflect"
 	"runtime"
+	"strings"
 	"testing"
+
+	"github.com/go-test/deep"
 )
 
 // Assert fails the test if the condition is false.
@@ -44,21 +46,39 @@ func Ok(tb testing.TB, err error) {
 // Equals fails the test if exp is not equal to act.
 // Taken from https://github.com/benbjohnson/testing.
 func Equals(tb testing.TB, exp, act interface{}) {
-	if !reflect.DeepEqual(exp, act) {
+	tb.Helper()
+	if diff := deep.Equal(exp, act); diff != nil {
 		_, file, line, _ := runtime.Caller(1)
 		fmt.Printf("\033[31m%s:%d:\n\n\texp: %#v\n\n\tgot: %#v\033[39m\n\n", filepath.Base(file), line, exp, act)
-		tb.FailNow()
+		tb.Fatal(diff)
 	}
+	//if !reflect.DeepEqual(exp, act) {
+	//	_, file, line, _ := runtime.Caller(1)
+	//	fmt.Printf("\033[31m%s:%d:\n\n\texp: %#v\n\n\tgot: %#v\033[39m\n\n", filepath.Base(file), line, exp, act)
+	//	tb.FailNow()
+	//}
 }
 
 // ErrEquals fails the test if act is nil or act.Error() != exp
 func ErrEquals(tb testing.TB, exp string, act error) {
 	tb.Helper()
 	if act == nil {
-		tb.Errorf("exp err %q but err was nil", exp)
+		tb.Fatalf("exp err %q but err was nil", exp)
 	}
 	if act.Error() != exp {
-		tb.Errorf("exp err: %q but got: %q", exp, act.Error())
+		tb.Fatalf("exp err: %q but got: %q", exp, act.Error())
+	}
+}
+
+// ErrContains fails the test if act is nil or act.Error() does not contain
+// substr.
+func ErrContains(tb testing.TB, substr string, act error) {
+	tb.Helper()
+	if act == nil {
+		tb.Fatalf("exp err to contain %q but err was nil", substr)
+	}
+	if !strings.Contains(act.Error(), substr) {
+		tb.Fatalf("exp err %q to contain $q", act.Error(), substr)
 	}
 }
 
