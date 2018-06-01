@@ -538,6 +538,22 @@ spec:
           limits:
             memory: 256Mi
             cpu: 100m
+        livenessProbe:
+          # We only need to check every 60s since Atlantis is not a
+          # high-throughput service.
+          periodSeconds: 60
+          httpGet:
+            path: /healthz
+            port: 4141
+            # If using https, change this.
+            scheme: http
+        readinessProbe:
+          periodSeconds: 60
+          httpGet:
+            path: /healthz
+            port: 4141
+            # If using https, change this.
+            scheme: http
   volumeClaimTemplates:
   - metadata:
       name: atlantis-data
@@ -631,6 +647,22 @@ spec:
           limits:
             memory: 256Mi
             cpu: 100m
+        livenessProbe:
+          # We only need to check every 60s since Atlantis is not a
+          # high-throughput service.
+          periodSeconds: 60
+          httpGet:
+            path: /healthz
+            port: 4141
+            # If using https, change this.
+            scheme: http
+        readinessProbe:
+          periodSeconds: 60
+          httpGet:
+            path: /healthz
+            port: 4141
+            # If using https, change this.
+            scheme: http
 ---
 apiVersion: v1
 kind: Service
