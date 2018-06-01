@@ -33,7 +33,7 @@ go install
 
 Run Atlantis:
 ```
-atlantis server --gh-user <your username> --gh-token <your token> --log-level debug
+atlantis server --gh-user <your username> --gh-token <your token> --repo-whitelist <your repo> --gh-webhook-secret <your webhook secret> --log-level debug
 ```
 If you get an error like `command not found: atlantis`, ensure that `$GOPATH/bin` is in your `$PATH`.
 
@@ -42,7 +42,7 @@ If you get an error like `command not found: atlantis`, ensure that `$GOPATH/bin
 - Create a personal access token for Atlantis. See [Create a GitHub token](https://github.com/runatlantis/atlantis#create-a-github-token).
 - Start Atlantis in server mode using that token:
 ```
-atlantis server --gh-user <your username> --gh-token <your token> --log-level debug
+atlantis server --gh-user <your username> --gh-token <your token> --repo-whitelist <your repo> --gh-webhook-secret <your webhook secret> --log-level debug
 ```
 - Download ngrok from https://ngrok.com/download. This will enable you to expose Atlantis running on your laptop to the internet so GitHub can call it.
 - When you've downloaded and extracted ngrok, run it on port `4141`:
@@ -104,7 +104,7 @@ func TestLockingExisting(t *testing.T) {
 # Creating a New Release
 1. Update version number in
     1. `main.go`
-1. Update `CHANGELOG.md` with latest release number and information
+1. Update `CHANGELOG.md` with latest release number and information (this URL might be useful: https://github.com/runatlantis/atlantis/compare/v0.3.5...master)
 1. Create a pull request and merge to master
 1. Check out master and fetch latest
 1. Run `make release`

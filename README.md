@@ -28,6 +28,8 @@ Read about [Why We Built Atlantis](https://medium.com/runatlantis/introducing-at
 * [Security](#security)
 * [Production-Ready Deployment](#production-ready-deployment)
     * [Docker](#docker)
+    * [Kubernetes](#kubernetes)
+    * [AWS Fargate](#aws-fargate)
 * [Server Configuration](#server-configuration)
 * [AWS Credentials](#aws-credentials)
 * [Glossary](#glossary)
@@ -60,15 +62,15 @@ Download from [https://github.com/runatlantis/atlantis/releases](https://github.
 
 Run
 ```
-./atlantis bootstrap
+./atlantis testdrive
 ```
-This will walk you through running Atlantis locally. It will
+This mode sets up Atlantis on a test repo so you can try it out. It will
 - fork an example terraform project
 - install terraform (if not already in your PATH)
 - install ngrok so we can expose Atlantis to GitHub
 - start Atlantis
 
-If you're ready to permanently set up Atlantis see [Production-Ready Deployment](#production-ready-deployment)
+If you're ready to permanently set up Atlantis see [Production-Ready Deployment](#production-ready-deployment).
 
 ## Pull/Merge Request Commands
 Atlantis currently supports three commands that can be run via pull request comments (or merge request comments on GitLab):
@@ -174,7 +176,7 @@ atlantis plan -w staging
 
 If a workspace is specified, Atlantis will use `terraform workspace select {workspace}` prior to running `terraform plan` or `terraform apply`.
 
-If you're using the `env/{env}.tfvars` [project structure](#project-structure) we will also append `-tfvars=env/{env}.tfvars` to `plan` and `apply`.
+If you're using the `env/{env}.tfvars` [project structure](#project-structure) we will also append `-var-file=env/{env}.tfvars` to `plan` and `apply`.
 
 If no workspace is specified, we'll use the `default` workspace by default.
 This replicates Terraform's default behaviour which also uses the `default` workspace.
@@ -332,13 +334,13 @@ If installing on a single repository, navigate to the repository home page and c
 - Click **Add webhook**
 - set **Payload URL** to `http://$URL/events` where `$URL` is where Atlantis is hosted. **Be sure to add `/events`**
 - set **Content type** to `application/json`
-- leave **Secret** blank or set this to a random key (https://www.random.org/strings/). If you set it, you'll need to use the `--gh-webhook-secret` option when you start Atlantis
+- set **Secret** to a random key (https://www.random.org/strings/). You'll need to pass this value to the `--gh-webhook-secret` option when you start Atlantis
 - select **Let me select individual events**
 - check the boxes
-	- **Pull request review**
-	- **Push**
-	- **Issue comment**
-	- **Pull request**
+	- **Pull request reviews**
+	- **Pushes**
+	- **Issue comments**
+	- **Pull requests**
 - leave **Active** checked
 - click **Add webhook**
 
@@ -356,6 +358,10 @@ If you're using GitLab, navigate to your project's home page in GitLab
 
 ### Create a GitHub Token
 We recommend creating a new user in GitHub named **atlantis** that performs all API actions, however you can use any user.
+
+**NOTE: The Atlantis user must have "Write permissions" (for repos in an organization) or be a "Collaborator" (for repos in a user account) to be able to set commit statuses:**
+![Atlantis status](./docs/status.png)
+
 Once you've created the user (or have decided to use an existing user) you need to create a personal access token.
 - follow [https://help.github.com/articles/creating-a-personal-access-token-for-the-command-line/#creating-a-token](https://help.github.com/articles/creating-a-personal-access-token-for-the-command-line/#creating-a-token)
 - copy the access token
@@ -424,6 +430,234 @@ docker build -t {YOUR_DOCKER_ORG}/atlantis-custom -f Dockerfile-custom .
 docker run {YOUR_DOCKER_ORG}/atlantis-custom server --gh-user=GITHUB_USERNAME --gh-token=GITHUB_TOKEN
 ```
 
+### Kubernetes
+Atlantis can be deployed into Kubernetes as a
+[Deployment](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/)
+or as a [Statefulset](https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/) with persistent storage.
+
+StatefulSet is recommended because Atlantis stores its data on disk and so if your Pod dies
+or you upgrade Atlantis, you won't lose the data. On the other hand, the only data that
+Atlantis has right now is any plans that haven't been applied and Atlantis locks. If
+Atlantis loses that data, you just need to run `atlantis plan` again so it's not the end of the world.
+
+Regardless of whether you choose a Deployment or StatefulSet, first create a Secret with the webhook secret and access token:
+```
+echo -n "yourtoken" > token
+echo -n "yoursecret" > webhook-secret
+kubectl create secret generic atlantis-vcs --from-file=token --from-file=webhook-secret
+```
+
+Next, edit the manifests below as follows:
+1. Replace `<VERSION>` in `image: runatlantis/atlantis:<VERSION>` with the most recent version from https://github.com/runatlantis/atlantis/releases/latest.
+    * NOTE: You never want to run with `:latest` because if your Pod moves to a new node, Kubernetes will pull the latest image and you might end
+up upgrading Atlantis by accident!
+2. Replace `value: github.com/yourorg/*` under `name: ATLANTIS_REPO_WHITELIST` with the whitelist pattern
+for your Terraform repos. See [--repo-whitelist](#--repo-whitelist) for more details.
+3. If you're using GitHub:
+    1. Replace `<YOUR_GITHUB_USER>` with the username of your Atlantis GitHub user without the `@`.
+    2. Delete all the `ATLANTIS_GITLAB_*` environment variables.
+4. If you're using GitLab:
+    1. Replace `<YOUR_GITLAB_USER>` with the username of your Atlantis GitLab user without the `@`.
+    2. Delete all the `ATLANTIS_GH_*` environment variables.
+
+#### StatefulSet Manifest
+<details>
+ <summary>Expand...</summary>
+
+```yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: atlantis
+spec:
+  serviceName: atlantis
+  replicas: 1
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      partition: 0
+  selector:
+    matchLabels:
+      app: atlantis
+  template:
+    metadata:
+      labels:
+        app: atlantis
+    spec:
+      securityContext:
+        fsGroup: 1000 # Atlantis group (1000) read/write access to volumes.
+      containers:
+      - name: atlantis
+        image: runatlantis/atlantis:v<VERSION> # 1. Replace <VERSION> with the most recent release.
+        env:
+        - name: ATLANTIS_REPO_WHITELIST
+          value: github.com/yourorg/* # 2. Replace this with your own repo whitelist.
+
+        ### GitHub Config ###
+        - name: ATLANTIS_GH_USER
+          value: <YOUR_GITHUB_USER> # 3i. If you're using GitHub replace <YOUR_GITHUB_USER> with the username of your Atlantis GitHub user without the `@`.
+        - name: ATLANTIS_GH_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: atlantis-vcs
+              key: token
+        - name: ATLANTIS_GH_WEBHOOK_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: atlantis-vcs
+              key: webhook-secret
+
+        ### GitLab Config ###
+        - name: ATLANTIS_GITLAB_USER
+          value: <YOUR_GITLAB_USER> # 4i. If you're using GitLab replace <YOUR_GITLAB_USER> with the username of your Atlantis GitLab user without the `@`.
+        - name: ATLANTIS_GITLAB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: atlantis-vcs
+              key: token
+        - name: ATLANTIS_GITLAB_WEBHOOK_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: atlantis-vcs
+              key: webhook-secret
+
+        - name: ATLANTIS_DATA_DIR
+          value: /atlantis
+        - name: ATLANTIS_PORT
+          value: "4141" # Kubernetes sets an ATLANTIS_PORT variable so we need to override.
+        volumeMounts:
+        - name: atlantis-data
+          mountPath: /atlantis
+        ports:
+        - name: atlantis
+          containerPort: 4141
+        resources:
+          requests:
+            memory: 256Mi
+            cpu: 100m
+          limits:
+            memory: 256Mi
+            cpu: 100m
+  volumeClaimTemplates:
+  - metadata:
+      name: atlantis-data
+    spec:
+      accessModes: ["ReadWriteOnce"] # Volume should not be shared by multiple nodes.
+      resources:
+        requests:
+          # The biggest thing Atlantis stores is the Git repo when it checks it out.
+          # It deletes the repo after the pull request is merged.
+          storage: 5Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: atlantis
+spec:
+  ports:
+  - name: atlantis
+    port: 80
+    targetPort: 4141
+  selector:
+    app: atlantis
+```
+</details>
+
+
+#### Deployment Manifest
+<details>
+ <summary>Expand...</summary>
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: atlantis
+  labels:
+    app: atlantis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: atlantis
+  template:
+    metadata:
+      labels:
+        app: atlantis
+    spec:
+      containers:
+      - name: atlantis
+        image: runatlantis/atlantis:v<VERSION> # 1. Replace <VERSION> with the most recent release.
+        env:
+        - name: ATLANTIS_REPO_WHITELIST
+          value: github.com/yourorg/* # 2. Replace this with your own repo whitelist.
+
+        ### GitHub Config ###
+        - name: ATLANTIS_GH_USER
+          value: <YOUR_GITHUB_USER> # 3i. If you're using GitHub replace <YOUR_GITHUB_USER> with the username of your Atlantis GitHub user without the `@`.
+        - name: ATLANTIS_GH_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: atlantis-vcs
+              key: token
+        - name: ATLANTIS_GH_WEBHOOK_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: atlantis-vcs
+              key: webhook-secret
+
+        ### GitLab Config ###
+        - name: ATLANTIS_GITLAB_USER
+          value: <YOUR_GITLAB_USER> # 4i. If you're using GitLab replace <YOUR_GITLAB_USER> with the username of your Atlantis GitLab user without the `@`.
+        - name: ATLANTIS_GITLAB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: atlantis-vcs
+              key: token
+        - name: ATLANTIS_GITLAB_WEBHOOK_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: atlantis-vcs
+              key: webhook-secret
+        - name: ATLANTIS_PORT
+          value: "4141" # Kubernetes sets an ATLANTIS_PORT variable so we need to override.
+        ports:
+        - name: atlantis
+          containerPort: 4141
+        resources:
+          requests:
+            memory: 256Mi
+            cpu: 100m
+          limits:
+            memory: 256Mi
+            cpu: 100m
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: atlantis
+spec:
+  ports:
+  - name: atlantis
+    port: 80
+    targetPort: 4141
+  selector:
+    app: atlantis
+```
+</details>
+
+#### Routing and SSL
+The manifests above create a Kubernetes `Service` of type `ClusterIP` which isn't accessible outside your cluster.
+Depending on how you're doing routing into Kubernetes, you may want to use a `LoadBalancer` so that Atlantis is accessible
+to GitHub/GitLab and your internal users.
+
+If you want to add SSL you can use something like https://github.com/jetstack/cert-manager to generate SSL
+certs and mount them into the Pod. Then set the `ATLANTIS_SSL_CERT_FILE` and `ATLANTIS_SSL_KEY_FILE` environment variables to enable SSL.
+You could also set up SSL at your LoadBalancer.
+
+### AWS Fargate
+
+If you'd like to run Atlantis on [AWS Fargate](https://aws.amazon.com/fargate/) check out the Atlantis module on the Terraform Module Registry: https://registry.terraform.io/modules/terraform-aws-modules/atlantis/aws
 
 ### Testing Out Atlantis on GitHub
 
@@ -539,13 +773,13 @@ A: No. Atlantis does not interfere with Terraform remote state in any way. Under
 
 **Q: How does Atlantis locking interact with Terraform [locking](https://www.terraform.io/docs/state/locking.html)?**
 
-A: Atlantis provides locking of pull requests that prevents concurrent modification of the same infrastructure (Terraform project) whereas Terraform locking only prevents two concurrent `terraform apply`'s from happening. 
+A: Atlantis provides locking of pull requests that prevents concurrent modification of the same infrastructure (Terraform project) whereas Terraform locking only prevents two concurrent `terraform apply`'s from happening.
 
 Terraform locking can be used alongside Atlantis locking since Atlantis is simply executing terraform commands.
 
 **Q: How to run Atlantis in high availability mode? Does it need to be?**
 
-A: Atlantis server can easily be run under the supervision of a init system like `upstart` or `systemd` to make sure `atlantis server` is always running. 
+A: Atlantis server can easily be run under the supervision of a init system like `upstart` or `systemd` to make sure `atlantis server` is always running.
 
 Atlantis currently stores all locking and Terraform plans locally on disk under the `--data-dir` directory (defaults to `~/.atlantis`). Because of this there is currently no way to run two or more Atlantis instances concurrently.
 
@@ -557,6 +791,9 @@ A: First, you'll need to get a public/private key pair to serve over SSL.
 These need to be in a directory accessible by Atlantis. Then start `atlantis server` with the `--ssl-cert-file` and `--ssl-key-file` flags.
 See `atlantis server --help` for more information.
 
+**Q: How can I get Atlantis up and running on AWS?**
+
+A: There is [terraform-aws-atlantis](https://github.com/terraform-aws-modules/terraform-aws-atlantis) project where complete Terraform configurations for running Atlantis on AWS Fargate are hosted. Tested and maintained.
 
 ## Contributing
 Want to contribute? Check out [CONTRIBUTING](https://github.com/runatlantis/atlantis/blob/master/CONTRIBUTING.md).

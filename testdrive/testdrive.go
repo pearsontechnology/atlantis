@@ -11,19 +11,21 @@
 // limitations under the License.
 // Modified hereafter by contributors to runatlantis/atlantis.
 //
-// Package bootstrap is used by the bootstrap command as a quick-start of
+// Package testdrive is used by the testdrive command as a quick-start of
 // Atlantis.
-package bootstrap
+package testdrive
 
 import (
 	"context"
 	"fmt"
-	"net"
+	"io/ioutil"
 	"os"
 	"os/exec"
 	"os/signal"
+	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -35,9 +37,9 @@ import (
 
 var terraformExampleRepoOwner = "runatlantis"
 var terraformExampleRepo = "atlantis-example"
-var bootstrapDescription = `[white]Welcome to Atlantis bootstrap!
+var bootstrapDescription = `[white]Welcome to Atlantis testdrive!
 
-This mode walks you through setting up and using Atlantis. We will
+This mode sets up Atlantis on a test repo so you can try it out. We will
 - fork an example terraform project to your username
 - install terraform (if not already in your PATH)
 - install ngrok so we can expose Atlantis to GitHub
@@ -51,12 +53,12 @@ var pullRequestBody = "In this pull request we will learn how to use atlantis. T
 	"* Now lets apply that plan. Type `atlantis apply` in the comments. This will run a `terraform apply`.\n" +
 	"\nThank you for trying out atlantis. For more info on running atlantis in production see https://github.com/runatlantis/atlantis"
 
-// Start begins the bootstrap process.
+// Start begins the testdrive process.
 // nolint: errcheck
 func Start() error {
 	s := spinner.New(spinner.CharSets[14], 100*time.Millisecond)
 	colorstring.Println(bootstrapDescription)
-	colorstring.Print("\n[white][bold]GitHub username: ")
+	colorstring.Print("\n[white][bold]github.com username: ")
 	fmt.Scanln(&githubUsername)
 	if githubUsername == "" {
 		return fmt.Errorf("please enter a valid github username")
@@ -105,12 +107,10 @@ Follow these instructions to create a token (we don't store any tokens):
 		colorstring.Println("[green]=> downloaded terraform successfully!")
 		s.Stop()
 
-		var terraformCmd *exec.Cmd
-		terraformCmd, err = executeCmd("mv", []string{"/tmp/terraform", "/usr/local/bin/"})
+		err = executeCmd("mv", "/tmp/terraform", "/usr/local/bin/")
 		if err != nil {
 			return errors.Wrapf(err, "moving terraform binary into /usr/local/bin")
 		}
-		terraformCmd.Wait()
 		colorstring.Println("[green]=> installed terraform successfully at /usr/local/bin")
 	} else {
 		colorstring.Println("[green]=> terraform found in $PATH!")
@@ -129,51 +129,69 @@ Follow these instructions to create a token (we don't store any tokens):
 	// Create ngrok tunnel.
 	colorstring.Println("[white]=> creating secure tunnel")
 	s.Start()
-	// Check if there is already an ngrok running by seeing if there's already
-	// something bound to its API port.
-	conn, err := net.Dial("tcp", ngrokAPIURL)
-	// We expect an error.
-	if err == nil {
-		conn.Close() // nolint: errcheck
-		return errors.New("unable to start ngrok because there is already something bound to its API port: " + ngrokAPIURL)
-	}
 
-	ngrokCmd, err := executeCmd("/tmp/ngrok", []string{"http", "4141"})
+	// We use a config file so we can set ngrok's API port (web_addr). We use
+	// the API to get the public URL and if there's already ngrok running, it
+	// will just choose a random API port and we won't be able to get the right
+	// url.
+	ngrokConfig := fmt.Sprintf(`
+web_addr: %s
+tunnels:
+  atlantis:
+    addr: %d
+    bind_tls: true
+    proto: http
+`, ngrokAPIURL, atlantisPort)
+
+	ngrokConfigFile, err := ioutil.TempFile("", "")
 	if err != nil {
-		return errors.Wrapf(err, "creating ngrok tunnel")
+		return errors.Wrap(err, "creating ngrok config file")
+	}
+	err = ioutil.WriteFile(ngrokConfigFile.Name(), []byte(ngrokConfig), 0600)
+	if err != nil {
+		return errors.Wrap(err, "writing ngrok config file")
 	}
 
-	ngrokErrChan := make(chan error, 10)
-	go func() {
-		ngrokErrChan <- ngrokCmd.Wait()
-	}()
-	// When this function returns, ngrok tunnel should be stopped.
-	defer ngrokCmd.Process.Kill()
+	// Used to ensure proper termination of all background commands.
+	var wg sync.WaitGroup
+	defer wg.Wait()
 
-	// Wait for the tunnel to be up.
-	time.Sleep(2 * time.Second)
+	tunnelReadyLog := regexp.MustCompile("client session established")
+	tunnelTimeout := 20 * time.Second
+	cancelNgrok, ngrokErrors, err := execAndWaitForStderr(&wg, tunnelReadyLog, tunnelTimeout,
+		"/tmp/ngrok", "start", "atlantis", "--config", ngrokConfigFile.Name(), "--log", "stderr", "--log-format", "term")
+	// Check if we got a fast error. Move on if we haven't (the command is still running).
+	if err != nil {
+		s.Stop()
+		return errors.Wrap(err, "creating ngrok tunnel")
+	}
+	// When this function returns, ngrok tunnel should be stopped.
+	defer cancelNgrok()
+
+	// The tunnel is up!
 	s.Stop()
 	colorstring.Println("[green]=> started tunnel!")
+	// There's a 1s delay between tunnel starting and API being up.
+	time.Sleep(1 * time.Second)
 	tunnelURL, err := getTunnelAddr()
 	if err != nil {
 		return errors.Wrapf(err, "getting tunnel url")
 	}
-	s.Stop()
 
 	// Start atlantis server.
 	colorstring.Println("[white]=> starting atlantis server")
 	s.Start()
-	atlantisCmd, err := executeCmd(os.Args[0], []string{"server", "--gh-user", githubUsername, "--gh-token", githubToken, "--data-dir", "/tmp/atlantis/data", "--atlantis-url", tunnelURL, "--repo-whitelist", fmt.Sprintf("github.com/%s/%s", githubUsername, terraformExampleRepo)})
+	serverReadyLog := regexp.MustCompile("Atlantis started - listening on port 4141")
+	serverReadyTimeout := 5 * time.Second
+	cancelAtlantis, atlantisErrors, err := execAndWaitForStderr(&wg, serverReadyLog, serverReadyTimeout,
+		os.Args[0], "server", "--gh-user", githubUsername, "--gh-token", githubToken, "--data-dir", "/tmp/atlantis/data", "--atlantis-url", tunnelURL, "--repo-whitelist", fmt.Sprintf("github.com/%s/%s", githubUsername, terraformExampleRepo))
+	// Check if we got a fast error. Move on if we haven't (the command is still running).
 	if err != nil {
-		return errors.Wrapf(err, "creating atlantis server")
+		return errors.Wrap(err, "creating atlantis server")
 	}
-
-	atlantisErrChan := make(chan error, 10)
-	go func() {
-		atlantisErrChan <- atlantisCmd.Wait()
-	}()
 	// When this function returns atlantis server should be stopped.
-	defer atlantisCmd.Process.Kill()
+	defer cancelAtlantis()
+
 	colorstring.Printf("[green]=> atlantis server is now securely exposed at [bold][underline]%s\n", tunnelURL)
 	fmt.Println("")
 
@@ -201,9 +219,9 @@ Follow these instructions to create a token (we don't store any tokens):
 	colorstring.Println("[white]=> opening pull request")
 	s.Start()
 	time.Sleep(2 * time.Second)
-	_, err = executeCmd("open", []string{pullRequestURL})
+	err = executeCmd("open", pullRequestURL)
 	if err != nil {
-		colorstring.Printf("[red]=> opening pull request failed. please go to: %s on the browser", pullRequestURL)
+		colorstring.Printf("[red]=> opening pull request failed. please go to: %s on the browser\n", pullRequestURL)
 	}
 	s.Stop()
 
@@ -213,11 +231,19 @@ Follow these instructions to create a token (we don't store any tokens):
 	colorstring.Println("[green] [press Ctrl-c to exit]")
 
 	// Wait for SIGINT or SIGTERM signals meaning the user has Ctrl-C'd the
-	// bootstrap process and want's to stop.
+	// testdrive process and want's to stop.
 	signalChan := make(chan os.Signal, 1)
 	signal.Notify(signalChan, syscall.SIGINT, syscall.SIGTERM)
-	<-signalChan
-	colorstring.Println("\n[red]shutdown signal received, exiting....")
-	colorstring.Println("\n[green]Thank you for using atlantis :) \n[white]For more information about how to use atlantis in production go to: https://github.com/runatlantis/atlantis")
-	return nil
+
+	// Keep checking for errors from ngrok or atlantis server. Exit normally on shutdown signal.
+	select {
+	case <-signalChan:
+		colorstring.Println("\n[red]shutdown signal received, exiting....")
+		colorstring.Println("\n[green]Thank you for using atlantis :) \n[white]For more information about how to use atlantis in production go to: https://github.com/runatlantis/atlantis")
+		return nil
+	case err := <-ngrokErrors:
+		return errors.Wrap(err, "ngrok tunnel")
+	case err := <-atlantisErrors:
+		return errors.Wrap(err, "atlantis server")
+	}
 }

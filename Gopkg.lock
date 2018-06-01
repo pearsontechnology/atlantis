@@ -58,8 +58,8 @@
 [[projects]]
   name = "github.com/gorilla/mux"
   packages = ["."]
-  revision = "24fca303ac6da784b9e8269f724ddeb0b2eea5e7"
-  version = "v1.5.0"
+  revision = "e3702bed27f0d39777b0b37b664b6280e8ef8fbf"
+  version = "v1.6.2"
 
 [[projects]]
   branch = "master"
@@ -105,7 +105,7 @@
   branch = "master"
   name = "github.com/lkysow/go-gitlab"
   packages = ["."]
-  revision = "5aba7769280ffa5408f98e1b95290989cc1428c5"
+  revision = "fcd13266e57eb071cbedfe8efc7969a7bc4c8f22"
 
 [[projects]]
   name = "github.com/magiconair/properties"
@@ -282,6 +282,6 @@
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
-  inputs-digest = "be41235ccfd8c7365bf426fa5174672181d5a962b21afc1c03742865cef6cbd4"
+  inputs-digest = "4e5fea92b65446bbdeccbdedfb28fb9c2ea21325b0335b3a4e7b98b60d47ccd6"
   solver-name = "gps-cdcl"
   solver-version = 1

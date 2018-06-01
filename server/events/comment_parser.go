@@ -20,7 +20,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/runatlantis/atlantis/server/events/vcs"
+	"github.com/runatlantis/atlantis/server/events/models"
 	"github.com/spf13/pflag"
 )
 
@@ -40,8 +40,8 @@ const (
 // CommentParsing handles parsing pull request comments.
 type CommentParsing interface {
 	// Parse attempts to parse a pull request comment to see if it's an Atlantis
-	// commmand.
-	Parse(comment string, vcsHost vcs.Host) CommentParseResult
+	// command.
+	Parse(comment string, vcsHost models.VCSHostType) CommentParseResult
 }
 
 // CommentParser implements CommentParsing
@@ -81,7 +81,7 @@ type CommentParseResult struct {
 // - atlantis plan --verbose -- -key=value -key2 value2
 //
 // nolint: gocyclo
-func (e *CommentParser) Parse(comment string, vcsHost vcs.Host) CommentParseResult {
+func (e *CommentParser) Parse(comment string, vcsHost models.VCSHostType) CommentParseResult {
 	if multiLineRegex.MatchString(comment) {
 		return CommentParseResult{Ignore: true}
 	}
@@ -101,7 +101,7 @@ func (e *CommentParser) Parse(comment string, vcsHost vcs.Host) CommentParseResu
 	// Atlantis can be invoked using the name of the VCS host user we're
 	// running under. Need to be able to match against that user.
 	vcsUser := e.GithubUser
-	if vcsHost == vcs.Gitlab {
+	if vcsHost == models.Gitlab {
 		vcsUser = e.GitlabUser
 	}
 	executableNames := []string{"run", "atlantis", "@" + vcsUser}
