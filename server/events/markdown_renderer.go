@@ -21,7 +21,9 @@ import (
 )
 
 // MarkdownRenderer renders responses as markdown.
-type MarkdownRenderer struct{}
+type MarkdownRenderer struct {
+	LockURLBuilder func(string) string
+}
 
 // CommonData is data that all responses have.
 type CommonData struct {
@@ -82,6 +84,7 @@ func (m *MarkdownRenderer) renderProjectResults(pathResults []ProjectResult, com
 				Failure: result.Failure,
 			})
 		} else if result.PlanSuccess != nil {
+			result.PlanSuccess.LockURL = m.LockURLBuilder(result.PlanSuccess.LockKey)
 			results[result.Path] = m.renderTemplate(planSuccessTmpl, *result.PlanSuccess)
 		} else if result.ApplySuccess != "" {
 			results[result.Path] = m.renderTemplate(applySuccessTmpl, struct{ Output string }{result.ApplySuccess})

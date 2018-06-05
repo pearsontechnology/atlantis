@@ -36,6 +36,7 @@ import (
 	"github.com/runatlantis/atlantis/server/events/locking"
 	"github.com/runatlantis/atlantis/server/events/locking/boltdb"
 	"github.com/runatlantis/atlantis/server/events/models"
+	"github.com/runatlantis/atlantis/server/events/repoconfig"
 	"github.com/runatlantis/atlantis/server/events/run"
 	"github.com/runatlantis/atlantis/server/events/terraform"
 	"github.com/runatlantis/atlantis/server/events/vcs"
@@ -184,11 +185,16 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 	workspace := &events.FileWorkspace{
 		DataDir: userConfig.DataDir,
 	}
-	projectPreExecute := &events.DefaultProjectPreExecutor{
+	projectLocker := &events.DefaultProjectLocker{
 		Locker:       lockingClient,
 		Run:          run,
 		ConfigReader: configReader,
 		Terraform:    terraformClient,
+	}
+	executionPlanner := &repoconfig.ExecutionPlanner{
+		ConfigReader:      &repoconfig.Reader{},
+		DefaultTFVersion:  terraformClient.Version(),
+		TerraformExecutor: terraformClient,
 	}
 	applyExecutor := &events.ApplyExecutor{
 		VCSClient:         vcsClient,
@@ -196,17 +202,18 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		RequireApproval:   userConfig.RequireApproval,
 		Run:               run,
 		AtlantisWorkspace: workspace,
-		ProjectPreExecute: projectPreExecute,
+		ProjectPreExecute: projectLocker,
+		ExecutionPlanner:  executionPlanner,
 		Webhooks:          webhooksManager,
 	}
 	planExecutor := &events.PlanExecutor{
-		VCSClient:         vcsClient,
-		Terraform:         terraformClient,
-		Run:               run,
-		Workspace:         workspace,
-		ProjectPreExecute: projectPreExecute,
-		Locker:            lockingClient,
-		ProjectFinder:     &events.DefaultProjectFinder{},
+		VCSClient:     vcsClient,
+		Terraform:     terraformClient,
+		Run:           run,
+		Workspace:     workspace,
+		ProjectLocker: projectLocker,
+		Locker:        lockingClient,
+		ProjectFinder: &events.DefaultProjectFinder{},
 	}
 	pullClosedExecutor := &events.PullClosedExecutor{
 		VCSClient: vcsClient,
@@ -266,7 +273,7 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		VCSClient:              vcsClient,
 	}
 	router := mux.NewRouter()
-	return &Server{
+	server := &Server{
 		AtlantisVersion:    config.AtlantisVersion,
 		Router:             router,
 		Port:               userConfig.Port,
@@ -280,11 +287,17 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		LockDetailTemplate: lockTemplate,
 		SSLKeyFile:         userConfig.SSLKeyFile,
 		SSLCertFile:        userConfig.SSLCertFile,
-	}, nil
+	}
+	server.initRoutes()
+	// MarkdownRenderer uses this function when commenting with the url to
+	// delete the lock. We're doing this down here after the server has been
+	// created because this is the soonest we have access to the fully
+	// constructed router that lets us generate this route.
+	markdownRenderer.LockURLBuilder = server.LockURLBuilder()
+	return server, nil
 }
 
-// Start creates the routes and starts serving traffic.
-func (s *Server) Start() error {
+func (s *Server) initRoutes() {
 	s.Router.HandleFunc("/", s.Index).Methods("GET").MatcherFunc(func(r *http.Request, rm *mux.RouteMatch) bool {
 		return r.URL.Path == "/" || r.URL.Path == "/index.html"
 	})
@@ -299,6 +312,10 @@ func (s *Server) Start() error {
 		u, _ := lockRoute.URL("id", url.QueryEscape(lockID))
 		return s.AtlantisURL + u.RequestURI()
 	})
+}
+
+// Start creates the routes and starts serving traffic.
+func (s *Server) Start() error {
 	n := negroni.New(&negroni.Recovery{
 		Logger:     log.New(os.Stdout, "", log.LstdFlags),
 		PrintStack: false,
@@ -307,12 +324,12 @@ func (s *Server) Start() error {
 	}, NewRequestLogger(s.Logger))
 	n.UseHandler(s.Router)
 
+	server := &http.Server{Addr: fmt.Sprintf(":%d", s.Port), Handler: n}
+
 	// Ensure server gracefully drains connections when stopped.
 	stop := make(chan os.Signal, 1)
 	// Stop on SIGINTs and SIGTERMs.
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
-
-	server := &http.Server{Addr: fmt.Sprintf(":%d", s.Port), Handler: n}
 	go func() {
 		s.Logger.Warn("Atlantis started - listening on port %v", s.Port)
 

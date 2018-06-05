@@ -52,6 +52,11 @@ func Equals(tb testing.TB, exp, act interface{}) {
 		fmt.Printf("\033[31m%s:%d:\n\n\texp: %#v\n\n\tgot: %#v\033[39m\n\n", filepath.Base(file), line, exp, act)
 		tb.Fatal(diff)
 	}
+	//if !reflect.DeepEqual(exp, act) {
+	//	_, file, line, _ := runtime.Caller(1)
+	//	fmt.Printf("\033[31m%s:%d:\n\n\texp: %#v\n\n\tgot: %#v\033[39m\n\n", filepath.Base(file), line, exp, act)
+	//	tb.FailNow()
+	//}
 }
 
 // ErrEquals fails the test if act is nil or act.Error() != exp
@@ -73,7 +78,7 @@ func ErrContains(tb testing.TB, substr string, act error) {
 		tb.Fatalf("exp err to contain %q but err was nil", substr)
 	}
 	if !strings.Contains(act.Error(), substr) {
-		tb.Fatalf("exp err %q to contain $q", act.Error(), substr)
+		tb.Fatalf("exp err %q to contain %q", act.Error(), substr)
 	}
 }
 
