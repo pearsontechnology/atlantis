@@ -5,12 +5,16 @@ LABEL authors="Anubhav Mishra, Luke Kysow"
 RUN addgroup atlantis && \
     adduser -S -G atlantis atlantis
 
+ENV CUSTOM_SETUP_COMMANDS=''
+
 ENV ATLANTIS_HOME_DIR=/home/atlantis
 
 # install atlantis dependencies
 ENV DUMB_INIT_VERSION=1.2.0
 ENV GOSU_VERSION=1.10
-RUN apk add --no-cache ca-certificates gnupg curl git unzip bash openssh libcap openssl && \
+RUN apk add --no-cache ca-certificates gnupg curl git unzip bash openssh libcap openssl python py-pip jq && \
+    pip install awscli && \
+    apk --purge -v del py-pip && \
     wget -O /bin/dumb-init https://github.com/Yelp/dumb-init/releases/download/v${DUMB_INIT_VERSION}/dumb-init_${DUMB_INIT_VERSION}_amd64 && \
     chmod +x /bin/dumb-init && \
     mkdir -p /tmp/build && \
