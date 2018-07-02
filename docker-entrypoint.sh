@@ -3,6 +3,12 @@ set -e
 
 # Modified: https://github.com/hashicorp/docker-consul/blob/2c2873f9d619220d1eef0bc46ec78443f55a10b5/0.X/docker-entrypoint.sh
 
+# Run custom set up commands here like copying credentials from s3 etc
+if [ "${CUSTOM_SETUP_COMMANDS}" != '' ]; then
+    eval "${CUSTOM_SETUP_COMMANDS}"
+fi
+
+
 # If the user is trying to run atlantis directly with some arguments, then
 # pass them to atlantis.
 if [ "${1:0:1}" = '-' ]; then
